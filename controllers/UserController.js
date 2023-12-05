@@ -1,29 +1,59 @@
+import sha1 from 'sha1';
+import { ObjectId } from 'mongodb';
 import dbClient from '../utils/db';
-import { userQueue } from '../worker';
-const crypto = require('crypto');
+import redisClient from '../utils/redis';
 
-export default class UserController {
+class UsersController {
   static async postNew(req, res) {
-    const { email } = req.body;
-    const { password } = req.body;
+    const { email, password } = req.body;
+
     if (!email) {
-      res.status(400).json({ error: 'Missing email' });
-      return;
+      return res.status(400).json({
+        error: 'Missing email',
+      });
+    } if (!password) {
+      return res.status(400).json({
+        error: 'Missing password',
+      });
     }
-    if (!password) {
-      res.status(400).json({ error: 'Missing password' });
-      return;
+
+    const users = dbClient.db.collection('users');
+    const emailCheck = await users.findOne({ email });
+    if (emailCheck) {
+      return res.status(400).json({
+        error: 'Already exist',
+      });
     }
-    const user = await (await dbClient.userCollection()).findOne({ email });
+    const hashedPw = sha1(password);
+    const newUser = await users.insertOne({ email, password: hashedPw });
+    console.log(newUser);
+    return res.status(201).json({
+      id: newUser.insertedId,
+      email,
+    });
+  }
+
+  static async getMe(req, res) {
+    const token = req.headers['x-token'];
+    const userId = await redisClient.get(`auth_${token}`);
+
+    if (!userId) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+      });
+    }
+    const userDb = dbClient.db.collection('users');
+    const user = await userDb.findOne({ _id: new ObjectId(userId) });
     if (user) {
-      res.status(400).json({ error: 'Alreay exist' });
-      return;
+      return res.status(200).json({
+        id: user._id,
+        email: user.email,
+      });
     }
-    const hashP = crypto.createHash('sha1').update(password).digest('hex');
-    const insertInfo = await (await dbClient.userCollection())
-      .insertOne({ email: `${email}`, password: hashP });
-    const userId = insertInfo.insertedId.toString();
-    userQueue.add({userId: userId});
-    res.status(200).json({ id: userId, email });
+    return res.status(401).json({
+      error: 'Unauthorized',
+    });
   }
 }
+
+export default UsersController;
